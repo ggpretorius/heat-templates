@@ -1,0 +1,130 @@
+heat_template_version: 2013-05-23
+
+description: |   
+  Heat Orchestration Template that spins up a
+  resource group with 2 Rackspace Cloud Servers
+  and a Cloud Load Balancer.
+
+parameters:
+  web_server_name:
+    description: Web server name
+    type: string
+    default: web1
+
+  db_name:
+    type: string
+    description: Database name
+    default: oscommercedb
+    constraints:
+      - length: { min: 1, max: 64 }
+        description: db_name must be between 1 and 64 characters
+      - allowed_pattern: '[a-zA-Z][a-zA-Z0-9]*'
+        description: db_name must begin with a letter and contain only alphanumeric characters
+
+  db_username:
+    type: string
+    description: The database admin account username
+    default: admin
+    hidden: false
+    constraints:
+      - length: { min: 1, max: 16 }
+        description: db_username must be between 1 and 64 characters
+      - allowed_pattern: '[a-zA-Z][a-zA-Z0-9]*'
+        description: db_username must begin with a letter and contain only alphanumeric characters
+
+  db_password:
+    type: string
+    description: The database admin account password
+    default: admin
+    hidden: true
+    constraints:
+      - length: { min: 1, max: 41 }
+        description: db_username must be between 1 and 64 characters
+      - allowed_pattern: '[a-zA-Z0-9]*'
+        description: db_password must contain only alphanumeric characters
+
+
+resources:
+
+  mysql_server:
+    type: "Rackspace::Cloud::Server"
+    properties:
+      flavor: 1 GB Performance
+      image: CentOS 6.5
+      name: mysql_server
+      key_name: heat-key
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash -v
+            yum -y install mysql-server git
+            chkconfig mysqld on
+            service mysqld start
+
+            # Configure firewall
+            iptables -I INPUT -p tcp -m state --state NEW -m tcp --dport 3306 -j ACCEPT
+            iptables-save > /etc/sysconfig/iptables
+
+            # Setup MySQL root password and create a user and DB
+            mysqladmin -u root password %db_rootpassword%
+            cat << EOF | mysql -u root --password=%db_rootpassword%
+            CREATE DATABASE %db_name%;
+            GRANT ALL PRIVILEGES ON %db_name%.* TO "%db_user%" IDENTIFIED BY "%db_password%";
+            DROP USER ""@localhost;
+            FLUSH PRIVILEGES;
+            EXIT
+            EOF
+
+            # Insert oscommerce mysql schema
+            #git clone %git_url% /root/oscommerce2
+            #cat /root/oscommerce2/catalog/install/oscommerce.sql | mysql -u root --password=%db_rootpassword% --database=%db_name%
+
+          params:
+            "%git_url%": { get_param: git_url }
+            "%db_rootpassword%": "admin"
+            "%db_name%": { get_param: db_name }
+            "%db_user%": { get_param: db_username }
+            "%db_password%": { get_param: db_password }
+
+  web_nodes:
+    type: OS::Heat::ResourceGroup
+    properties:
+      count: 1
+      resource_def:
+        type: Rackspace::Cloud::Server
+        properties:
+          flavor: 1 GB Performance
+          image: CentOS 6.5
+          key_name: heat-key
+          name: web_%index%
+          config_drive: true
+          #user_data_format: RAW
+          user_data:
+            get_file: cloud-config-web.sh
+     
+  lb:
+    type: Rackspace::Cloud::LoadBalancer
+    properties:
+      name: load_balancer
+      nodes:
+      - addresses: { get_attr: [web_nodes, accessIPv4]}
+        port: 80
+        condition: ENABLED
+      healthMonitor:
+        attemptsBeforeDeactivation: 3
+        delay: 10
+        timeout: 120
+        type: HTTP
+        path: "/"
+        statusRegex: "."
+        bodyRegex: "."
+      protocol: HTTP
+      port: 80
+      virtualIps:
+      - type: PUBLIC
+        ipVersion: IPV4
+
+outputs:
+  lb_public_ip:
+    description: The public IP address of the load balancer
+    value: { get_attr: [lb, PublicIp]}

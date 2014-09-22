@@ -1,0 +1,19 @@
+{
+    "templates": [
+        {
+            "id": 1,
+            "name": "2-tier E-Commerce architecture : Loadbalancer : OsCommerce appplication code deployed",
+            "url": "https://raw.github.com/ggpretorius/heat-templates/master/cloudcamp/oscommerce.php.mysql.yaml"
+        },
+        {
+            "id": 2,
+            "name": "2-tier E-Commerce architecture : Loadbalancer : 2 Web nodes : OsCommerce appplication code deployed",
+            "url": "https://raw.github.com/ggpretorius/heat-templates/master/cloudcamp/oscommerce.2-php.mysql.yaml"
+        },
+	{
+	    "id": 3,
+            "name": "3-tier E-commerce architecture : Loadbalancer : Autoscale Groups",
+            "url": "https://raw.github.com/ggpretorius/heat-templates/master/cloudcamp/ecommerce-3tier.autoscale.yaml"
+	}
+    ]
+}

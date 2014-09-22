@@ -1,0 +1,297 @@
+heat_template_version: 2013-05-23
+
+description: |
+  A template implementation of a resource that provides an osCommerce environment with PHP web servers and MySQL DB server
+
+parameters:
+
+  cloud_username:
+    description: Rackspace Cloud username
+    type: string
+
+  cloud_tenant_id:
+    description: Rackspace Cloud account number
+    type: string
+
+  cloud_api_key:
+    description: Rackspace Cloud API Key
+    type: string
+
+  web_server_flavor:
+    description: Rackspace Cloud Server flavor for web servers
+    type: string
+    default: 1 GB Performance
+    constraints:
+    - allowed_values:
+      - 1 GB Performance
+      description: must be a valid Rackspace Cloud Server flavor.
+
+  web_server_name:
+    description: Web server name
+    type: string
+    default: web1
+
+  web_server_image:
+    type: string
+    description: Server image id to use
+    default: CentOS 6.5
+    #default: fd8e4f18-9270-4f43-8932-c3719ae2f7fd
+    #constraints:
+    # CentOS64, RHEL64, SL64
+    #- allowed_values:
+    #  - f70ed7c7-b42e-4d77-83d8-40fa29825b85
+    #  - c6e2fed0-75bf-420d-a744-7cfc75a1889e
+    #  - bced783b-31d2-4637-b820-fa02522c518b
+    #  - fd8e4f18-9270-4f43-8932-c3719ae2f7fd
+    #  description: USERDATA is made to work with Red Hat flavors and clones
+
+  key-name:
+    description: Nova keypair name for ssh access to the server
+    type: string
+    default: heat-key
+    # required: true
+
+  git_url:
+    description: URL of a Git repository containing the PHP code.
+    type: string
+    default: https://github.com/ggpretorius/oscommerce2
+    # required: true
+
+  db_server_flavor:
+    description: Rackspace Cloud Server flavor for DB server
+    type: string
+    default: 1 GB Performance
+    constraints:
+    - allowed_values:
+      - 1 GB Performance
+      description: must be a valid Rackspace Cloud Server flavor.
+
+  db_server_name:
+    description: the instance name
+    type: string
+    default: db1
+
+  db_name:
+    type: string
+    description: Database name
+    default: oscommercedb
+    constraints:
+      - length: { min: 1, max: 64 }
+        description: db_name must be between 1 and 64 characters
+      - allowed_pattern: '[a-zA-Z][a-zA-Z0-9]*'
+        description: db_name must begin with a letter and contain only alphanumeric characters
+
+  db_username:
+    type: string
+    description: The database admin account username
+    default: admin
+    hidden: false
+    constraints:
+      - length: { min: 1, max: 16 }
+        description: db_username must be between 1 and 64 characters
+      - allowed_pattern: '[a-zA-Z][a-zA-Z0-9]*'
+        description: db_username must begin with a letter and contain only alphanumeric characters
+
+  db_password:
+    type: string
+    description: The database admin account password
+    default: admin
+    hidden: true
+    constraints:
+      - length: { min: 1, max: 41 }
+        description: db_username must be between 1 and 64 characters
+      - allowed_pattern: '[a-zA-Z0-9]*'
+        description: db_password must contain only alphanumeric characters
+
+
+
+
+
+resources:
+
+#  ext_lb:
+#      type: Rackspace::Cloud::LoadBalancer
+#      properties:
+#        nodes: []
+#        protocol: HTTP
+#        port: 80
+#        virtualIps:
+#          - {"type": "PUBLIC", "ipVersion": "IPV4"}
+
+  ext_lb:
+    type: Rackspace::Cloud::LoadBalancer
+    properties:
+      name: load_balancer
+      nodes: []
+      #- addresses: { get_attr: [web_nodes, accessIPv4]}
+        #port: 80
+        #condition: ENABLED
+      healthMonitor:
+        attemptsBeforeDeactivation: 3
+        delay: 10
+        timeout: 120
+        type: HTTP
+        path: "/"
+        statusRegex: "."
+        bodyRegex: "."
+      protocol: HTTP
+      port: 80
+      virtualIps:
+      - type: PUBLIC
+        ipVersion: IPV4
+
+
+  web_nodes:
+    type: OS::Heat::ResourceGroup
+    properties:
+      count: 2
+      resource_def:
+        type: "Rackspace::Cloud::Server"
+        properties:
+          flavor: { get_param: web_server_flavor }
+          #image: fd8e4f18-9270-4f43-8932-c3719ae2f7fd
+          image: { get_param: web_server_image }
+          name: web_%index%
+          key_name: { get_param: key-name }
+          config_drive: true
+          user_data:
+            str_replace:
+              template: |
+                #!/bin/bash -v
+                yum -y install httpd git php php-mysql php-gd
+                /etc/init.d/httpd start
+                chkconfig httpd on
+                iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+                iptables-save > /etc/sysconfig/iptables
+
+                rm -rf /var/www/html/
+                git clone %git_url% /var/www/html/
+                chmod 777 /var/www/html/catalog/includes/configure.php
+                chmod 777 /var/www/html/catalog/admin/includes/configure.php
+            
+                # Work around ssh key bug
+                #rm -f /root/.ssh/authorized_keys
+                #mv /root/.ssh/authorized_keys* /root/.ssh/authorized_keys
+                #chmod 600 /root/.ssh/authorized_keys
+
+                #PUB_IP_ADDR=`/sbin/ifconfig eth0 | grep "inet addr:" | sed s/addr:// | awk '{print $2;}'`
+
+                rm -rf /root/php-opencloud-master
+                git clone https://github.com/ggpretorius/php-opencloud-master /root/php-opencloud-master
+                #tar -xvzf /root/heat-templates/oscommerce/php-opencloud-master.tar.gz
+                cd /root/php-opencloud-master/samples/loadbalancers
+
+                sed -i s/\<USERNAME\>/%cloud_username%/g /root/php-opencloud-master/samples/loadbalancers/hkg_add_to_clb.php
+                sed -i s/\<TENANT\>/%cloud_tenant_id%/g /root/php-opencloud-master/samples/loadbalancers/hkg_add_to_clb.php
+                sed -i s/\<API_KEY\>/%cloud_api_key%/g /root/php-opencloud-master/samples/loadbalancers/hkg_add_to_clb.php
+                sed -i s/LB_ID/%lb_id%/g /root/php-opencloud-master/samples/loadbalancers/hkg_add_to_clb.php
+                
+                sed -i s/\<USERNAME\>/%cloud_username%/g /root/php-opencloud-master/samples/loadbalancers/hkg_get_lb_ip.php
+                sed -i s/\<TENANT\>/%cloud_tenant_id%/g /root/php-opencloud-master/samples/loadbalancers/hkg_get_lb_ip.php
+                sed -i s/\<API_KEY\>/%cloud_api_key%/g /root/php-opencloud-master/samples/loadbalancers/hkg_get_lb_ip.php
+                sed -i s/LB_ID/%lb_id%/g /root/php-opencloud-master/samples/loadbalancers/hkg_get_lb_ip.php
+
+                php /root/php-opencloud-master/samples/loadbalancers/hkg_add_to_clb.php
+                LB_ADDRESS=`php /root/php-opencloud-master/samples/loadbalancers/hkg_get_lb_ip.php`
+
+                sed -i s/\<LB_ADDRESS\>/$LB_ADDRESS/g /var/www/html/catalog/includes/configure.php
+                sed -i s/\<DB_SERVER_PRIVATE_IP\>/%db_server_private_ip%/g /var/www/html/catalog/includes/configure.php
+                sed -i s/\<DB_USER\>/%db_user%/g /var/www/html/catalog/includes/configure.php
+                sed -i s/\<DB_PASSWORD\>/%db_password%/g /var/www/html/catalog/includes/configure.php
+                sed -i s/\<DB_NAME\>/%db_name%/g /var/www/html/catalog/includes/configure.php
+
+                sed -i s/\<LB_ADDRESS\>/$LB_ADDRESS/g /var/www/html/catalog/admin/includes/configure.php
+                sed -i s/\<DB_SERVER_PRIVATE_IP\>/%db_server_private_ip%/g /var/www/html/catalog/admin/includes/configure.php
+                sed -i s/\<DB_USER\>/%db_user%/g /var/www/html/catalog/admin/includes/configure.php
+                sed -i s/\<DB_PASSWORD\>/%db_password%/g /var/www/html/catalog/admin/includes/configure.php
+                sed -i s/\<DB_NAME\>/%db_name%/g /var/www/html/catalog/admin/includes/configure.php
+
+              params:
+                "%git_url%": { get_param: git_url }
+                #"%web_server_public_ip%": { get_attr: [ php_app, accessIPv4 ] }
+                "%db_server_private_ip%": { get_attr: [ mysql_server, privateIPv4 ] }
+                "%db_name%": { get_param: db_name }
+                "%db_user%": { get_param: db_username }
+                "%db_password%": { get_param: db_password }
+                "%lb_id%": { get_resource: ext_lb }
+                "%cloud_username%": { get_param: cloud_username }
+                "%cloud_tenant_id%": { get_param: cloud_tenant_id }
+                "%cloud_api_key%": { get_param: cloud_api_key }
+
+
+  mysql_server:
+    type: "Rackspace::Cloud::Server"
+    #type: "OS::Nova::Server"
+    properties:
+      flavor: { get_param: db_server_flavor }
+      image: fd8e4f18-9270-4f43-8932-c3719ae2f7fd
+      name: { get_param: db_server_name }
+      key_name: { get_param: key-name }
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash -v
+            yum -y install mysql-server git
+            chkconfig mysqld on
+            service mysqld start
+            
+            # Configure firewall
+            iptables -I INPUT -p tcp -m state --state NEW -m tcp --dport 3306 -j ACCEPT
+            iptables-save > /etc/sysconfig/iptables
+
+            # Setup MySQL root password and create a user and DB
+            mysqladmin -u root password %db_rootpassword%
+            cat << EOF | mysql -u root --password=%db_rootpassword%
+            CREATE DATABASE %db_name%;
+            GRANT ALL PRIVILEGES ON %db_name%.* TO "%db_user%" IDENTIFIED BY "%db_password%";
+            DROP USER ""@localhost;
+            FLUSH PRIVILEGES;
+            EXIT
+            EOF
+
+            #Insert oscommerce mysql schema
+            git clone %git_url% /root/oscommerce2
+            cat /root/oscommerce2/catalog/install/oscommerce.sql | mysql -u root --password=%db_rootpassword% --database=%db_name%
+          
+          params:
+            "%git_url%": { get_param: git_url }
+            "%db_rootpassword%": "admin"
+            "%db_name%": { get_param: db_name }
+            "%db_user%": { get_param: db_username }
+            "%db_password%": { get_param: db_password } 
+
+
+outputs:
+
+  public_url:
+    value: 
+      str_replace:
+        template: http://%ip%/catalog
+        params:
+          "%ip%": { get_attr: [ ext_lb, PublicIp ] }
+    description: URL for PHP app
+#
+#
+#  web_server_public_ip:
+#    value: { get_attr: [ php_app, accessIPv4 ] }
+#    description: The public ip address of the server
+
+#  web_server_private_ip:
+#    value: { get_attr: [ php_app, privateIPv4 ] }
+#    description: The private ip address of the server
+
+#  db_server_public_ip:
+#    value: { get_attr: [ mysql_server, accessIPv4 ] }
+#    description: The public ip address of the server
+
+#  db_server_private_ip:
+#    value: { get_attr: [ mysql_server, privateIPv4 ] }
+#    description: The private ip address of the server
+
+#  website_url:
+#    value:
+#      str_replace:
+#        template: http://%ip%/
+#        params:
+#          "%ip%": { get_attr: [ php_app, privateIPv4 ] }
+#    description: URL for PHP app

@@ -1,0 +1,311 @@
+heat_template_version: 2013-05-23
+
+description: |
+  A template implementation of a resource that provides an osCommerce environment with PHP web servers and MySQL DB server
+
+parameters:
+
+  web_server_flavor:
+    description: Rackspace Cloud Server flavor for web servers
+    type: string
+    default: 1GB Standard Instance
+    constraints:
+    - allowed_values:
+      - 512MB Standard Instance
+      - 1GB Standard Instance
+      - 2GB Standard Instance
+      - 4GB Standard Instance
+      - 8GB Standard Instance
+      - 15GB Standard Instance
+      - 30GB Standard Instance
+      description: must be a valid Rackspace Cloud Server flavor.
+
+  web_server_name:
+    description: Web server name
+    type: string
+    default: web1
+
+  web_server_image:
+    type: string
+    description: Server image id to use
+    default: f70ed7c7-b42e-4d77-83d8-40fa29825b85
+    constraints:
+    # CentOS64, RHEL64, SL64
+    - allowed_values:
+      - f70ed7c7-b42e-4d77-83d8-40fa29825b85
+      - c6e2fed0-75bf-420d-a744-7cfc75a1889e
+      - bced783b-31d2-4637-b820-fa02522c518b
+      description: USERDATA is made to work with Red Hat flavors and clones
+
+  key-name:
+    description: Nova keypair name for ssh access to the server
+    type: string
+    required: true
+
+  git_url:
+    description: URL of a Git repository containing the PHP code.
+    type: string
+    default: https://github.com/osCommerce/oscommerce2
+    required: true
+
+  db_server_flavor:
+    description: Rackspace Cloud Server flavor for DB server
+    type: string
+    default: 1GB Standard Instance
+    constraints:
+    - allowed_values:
+      - 512MB Standard Instance
+      - 1GB Standard Instance
+      - 2GB Standard Instance
+      - 4GB Standard Instance
+      - 8GB Standard Instance
+      - 15GB Standard Instance
+      - 30GB Standard Instance
+      description: must be a valid Rackspace Cloud Server flavor.
+
+  db_server_name:
+    description: the instance name
+    type: string
+    default: db1
+
+  db_name:
+    type: string
+    description: Database name
+    default: oscommercedb
+    constraints:
+      - length: { min: 1, max: 64 }
+        description: db_name must be between 1 and 64 characters
+      - allowed_pattern: '[a-zA-Z][a-zA-Z0-9]*'
+        description: db_name must begin with a letter and contain only alphanumeric characters
+
+  db_username:
+    type: string
+    description: The database admin account username
+    default: admin
+    hidden: false
+    constraints:
+      - length: { min: 1, max: 16 }
+        description: db_username must be between 1 and 64 characters
+      - allowed_pattern: '[a-zA-Z][a-zA-Z0-9]*'
+        description: db_username must begin with a letter and contain only alphanumeric characters
+
+  db_password:
+    type: string
+    description: The database admin account password
+    default: admin
+    hidden: true
+    constraints:
+      - length: { min: 1, max: 41 }
+        description: db_username must be between 1 and 64 characters
+      - allowed_pattern: '[a-zA-Z0-9]*'
+        description: db_password must contain only alphanumeric characters
+
+
+
+
+
+resources:
+
+  ext_lb:
+      type: Rackspace::Cloud::LoadBalancer
+      properties:
+        nodes: []
+        protocol: HTTP
+        port: 80
+        virtualIps:
+          - {"type": "PUBLIC", "ipVersion": "IPV4"}
+
+
+  php_app:
+    type: "Rackspace::Cloud::Server"
+    #type: "OS::Nova::Server"
+    properties:
+      flavor: { get_param: web_server_flavor }
+      image: CentOS 6.4
+      name: { get_param: web_server_name }
+      key_name: { get_param: key-name }
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash -v
+            yum -y install httpd git php php-mysql php-gd
+            /etc/init.d/httpd start
+            chkconfig httpd on
+            iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+            iptables-save > /etc/sysconfig/iptables
+            git clone %git_url% /var/www/html/
+            chmod 777 /var/www/html/catalog/includes/configure.php
+            chmod 777 /var/www/html/catalog/admin/includes/configure.php
+            
+            # Work around ssh key bug
+            rm -f /root/.ssh/authorized_keys
+            mv /root/.ssh/authorized_keys* /root/.ssh/authorized_keys
+            chmod 600 /root/.ssh/authorized_keys
+
+            #PUB_IP_ADDR=`/sbin/ifconfig eth0 | grep "inet addr:" | sed s/addr:// | awk '{print $2;}'`
+
+            git clone https://github.com/ggpretorius/heat-templates /root/heat-templates/
+            tar -xvzf /root/heat-templates/cloudcamp/php-opencloud-master.tar.gz
+            cd /root/php-opencloud-master/samples/loadbalancers
+            sed -i s/LB_ID/%lb_id%/g /root/php-opencloud-master/samples/loadbalancers/add_to_clb.php
+            sed -i s/LB_ID/%lb_id%/g /root/php-opencloud-master/samples/loadbalancers/get_lb_ip.php
+            php add_to_clb.php
+            LB_ADDRESS=`php get_lb_ip.php`
+
+            #Add osCommerce config
+            cat << EOF > /var/www/html/catalog/includes/configure.php
+            <?php
+            define('HTTP_SERVER', 'http://$LB_ADDRESS');
+            define('HTTPS_SERVER', 'http://$LB_ADDRESS');
+            define('ENABLE_SSL', false);
+            define('HTTP_COOKIE_DOMAIN', '');
+            define('HTTPS_COOKIE_DOMAIN', '');
+            define('HTTP_COOKIE_PATH', '/catalog/');
+            define('HTTPS_COOKIE_PATH', '/catalog/');
+            define('DIR_WS_HTTP_CATALOG', '/catalog/');
+            define('DIR_WS_HTTPS_CATALOG', '/catalog/');
+            define('DIR_WS_IMAGES', 'images/');
+            define('DIR_WS_ICONS', DIR_WS_IMAGES . 'icons/');
+            define('DIR_WS_INCLUDES', 'includes/');
+            define('DIR_WS_FUNCTIONS', DIR_WS_INCLUDES . 'functions/');
+            define('DIR_WS_CLASSES', DIR_WS_INCLUDES . 'classes/');
+            define('DIR_WS_MODULES', DIR_WS_INCLUDES . 'modules/');
+            define('DIR_WS_LANGUAGES', DIR_WS_INCLUDES . 'languages/');
+
+            define('DIR_WS_DOWNLOAD_PUBLIC', 'pub/');
+            define('DIR_FS_CATALOG', '/var/www/html/catalog/');
+            define('DIR_FS_DOWNLOAD', DIR_FS_CATALOG . 'download/');
+            define('DIR_FS_DOWNLOAD_PUBLIC', DIR_FS_CATALOG . 'pub/');
+
+            define('DB_SERVER', '%db_server_private_ip%');
+            define('DB_SERVER_USERNAME', '%db_user%');
+            define('DB_SERVER_PASSWORD', '%db_password%');
+            define('DB_DATABASE', '%db_name%');
+            define('USE_PCONNECT', 'false');
+            define('STORE_SESSIONS', 'mysql');
+            define('CFG_TIME_ZONE', 'Asia/Hong_Kong');
+            ?>
+            EOF
+
+            cat << EOF > /var/www/html/catalog/admin/includes/configure.php
+            <?php
+            define('HTTP_SERVER', 'http://$LB_ADDRESS');
+            define('HTTP_CATALOG_SERVER', 'http://$LB_ADDRESS');
+            define('HTTPS_CATALOG_SERVER', 'http://$LB_ADDRESS');
+            define('ENABLE_SSL_CATALOG', 'false');
+            define('DIR_FS_DOCUMENT_ROOT', '/var/www/html/catalog/');
+            define('DIR_WS_ADMIN', '/catalog/admin/');
+            define('DIR_FS_ADMIN', '/var/www/html/catalog/admin/');
+            define('DIR_WS_CATALOG', '/catalog/');
+            define('DIR_WS_HTTPS_CATALOG', '/catalog/');
+            define('DIR_FS_CATALOG', '/var/www/html/catalog/');
+            define('DIR_WS_IMAGES', 'images/');
+            define('DIR_WS_ICONS', DIR_WS_IMAGES . 'icons/');
+            define('DIR_WS_CATALOG_IMAGES', DIR_WS_CATALOG . 'images/');
+            define('DIR_WS_INCLUDES', 'includes/');
+            define('DIR_WS_BOXES', DIR_WS_INCLUDES . 'boxes/');
+            define('DIR_WS_FUNCTIONS', DIR_WS_INCLUDES . 'functions/');
+            define('DIR_WS_CLASSES', DIR_WS_INCLUDES . 'classes/');
+            define('DIR_WS_MODULES', DIR_WS_INCLUDES . 'modules/');
+            define('DIR_WS_LANGUAGES', DIR_WS_INCLUDES . 'languages/');
+            define('DIR_WS_CATALOG_LANGUAGES', DIR_WS_CATALOG . 'includes/languages/');
+            define('DIR_FS_CATALOG_LANGUAGES', DIR_FS_CATALOG . 'includes/languages/');
+            define('DIR_FS_CATALOG_IMAGES', DIR_FS_CATALOG . 'images/');
+            define('DIR_FS_CATALOG_MODULES', DIR_FS_CATALOG . 'includes/modules/');
+            define('DIR_FS_BACKUP', DIR_FS_ADMIN . 'backups/');
+            define('DIR_FS_DOWNLOAD', DIR_FS_CATALOG . 'download/');
+            define('DIR_FS_DOWNLOAD_PUBLIC', DIR_FS_CATALOG . 'pub/');
+
+            define('DB_SERVER', '%db_server_private_ip%');
+            define('DB_SERVER_USERNAME', '%db_user%');
+            define('DB_SERVER_PASSWORD', '%db_password%');
+            define('DB_DATABASE', '%db_name%');
+            define('USE_PCONNECT', 'false');
+            define('STORE_SESSIONS', 'mysql');
+            define('CFG_TIME_ZONE', 'Asia/Hong_Kong');
+            ?>
+            EOF
+
+
+          params:
+            "%git_url%": { get_param: git_url }
+            #"%web_server_public_ip%": { get_attr: [ php_app, accessIPv4 ] }
+            "%db_server_private_ip%": { get_attr: [ mysql_server, privateIPv4 ] }
+            "%db_name%": { get_param: db_name }
+            "%db_user%": { get_param: db_username }
+            "%db_password%": { get_param: db_password }
+            "%lb_id%": { get_resource: ext_lb }
+
+
+  mysql_server:
+    type: "Rackspace::Cloud::Server"
+    #type: "OS::Nova::Server"
+    properties:
+      flavor: { get_param: db_server_flavor }
+      image: CentOS 6.4
+      name: { get_param: db_server_name }
+      key_name: { get_param: key-name }
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash -v
+            yum -y install mysql-server git
+            chkconfig mysqld on
+            service mysqld start
+            
+            # Work around ssh key bug
+            rm -f /root/.ssh/authorized_keys
+            mv /root/.ssh/authorized_keys* /root/.ssh/authorized_keys
+            chmod 600 /root/.ssh/authorized_keys
+
+            # Configure firewall
+            iptables -I INPUT -p tcp -m state --state NEW -m tcp --dport 3306 -j ACCEPT
+            iptables-save > /etc/sysconfig/iptables
+
+            # Setup MySQL root password and create a user and DB
+            mysqladmin -u root password %db_rootpassword%
+            cat << EOF | mysql -u root --password=%db_rootpassword%
+            CREATE DATABASE %db_name%;
+            GRANT ALL PRIVILEGES ON %db_name%.* TO "%db_user%" IDENTIFIED BY "%db_password%";
+            DROP USER ""@localhost;
+            FLUSH PRIVILEGES;
+            EXIT
+            EOF
+
+            #Insert oscommerce mysql schema
+            git clone %git_url% /root/oscommerce2
+            cat /root/oscommerce2/catalog/install/oscommerce.sql | mysql -u root --password=%db_rootpassword% --database=%db_name%
+          
+          params:
+            "%git_url%": { get_param: git_url }
+            "%db_rootpassword%": "admin"
+            "%db_name%": { get_param: db_name }
+            "%db_user%": { get_param: db_username }
+            "%db_password%": { get_param: db_password } 
+
+
+outputs:
+
+  web_server_public_ip:
+    value: { get_attr: [ php_app, accessIPv4 ] }
+    description: The public ip address of the server
+
+  web_server_private_ip:
+    value: { get_attr: [ php_app, privateIPv4 ] }
+    description: The private ip address of the server
+
+  db_server_public_ip:
+    value: { get_attr: [ mysql_server, accessIPv4 ] }
+    description: The public ip address of the server
+
+  db_server_private_ip:
+    value: { get_attr: [ mysql_server, privateIPv4 ] }
+    description: The private ip address of the server
+
+  website_url:
+    value:
+      str_replace:
+        template: http://%ip%/
+        params:
+          "%ip%": { get_attr: [ php_app, privateIPv4 ] }
+    description: URL for PHP app

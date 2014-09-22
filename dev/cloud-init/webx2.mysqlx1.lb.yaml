@@ -1,0 +1,79 @@
+heat_template_version: 2013-05-23
+
+description: |   
+  Heat Orchestration Template that spins up a
+  resource group with 2 Rackspace Cloud Servers
+  and a Cloud Load Balancer.
+
+parameters:
+  web_server_name:
+    description: Web server name
+    type: string
+    default: web1
+
+resources:
+
+#  cloud-config-web:
+#    type: OS::Heat::CloudConfig
+#    properties:
+#      get_file: cloud-config-web
+
+
+
+  web_nodes:
+    type: OS::Heat::ResourceGroup
+    properties:
+      count: 1
+      resource_def:
+        type: Rackspace::Cloud::Server
+        properties:
+          flavor: 1 GB Performance
+          image: CentOS 6.5
+          key_name: heat-key
+          name: web_%index%
+          config_drive: true
+          #user_data_format: RAW
+          user_data:  
+            str_replace:
+              template: |
+                #!/bin/bash -v
+                yum -y install httpd git php php-mysql php-gd
+                /etc/init.d/httpd start
+                chkconfig httpd on
+
+                wget http://wordpress.org/latest.tar.gz -P /tmp/
+                tar -zxf /tmp/latest.tar.gz -C /var/www/html
+
+                #Set up iptables
+                iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+                iptables-save > /etc/sysconfig/iptables
+
+              params:
+                "%web_server_name%": { get_param: web_server_name }
+     
+  lb:
+    type: Rackspace::Cloud::LoadBalancer
+    properties:
+      name: load_balancer
+      nodes:
+      - addresses: { get_attr: [web_nodes, accessIPv4]}
+        port: 80
+        condition: ENABLED
+      healthMonitor:
+        attemptsBeforeDeactivation: 3
+        delay: 10
+        timeout: 120
+        type: HTTP
+        path: "/"
+        statusRegex: "."
+        bodyRegex: "."
+      protocol: HTTP
+      port: 80
+      virtualIps:
+      - type: PUBLIC
+        ipVersion: IPV4
+
+outputs:
+  lb_public_ip:
+    description: The public IP address of the load balancer
+    value: { get_attr: [lb, PublicIp]}
